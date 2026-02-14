@@ -1,0 +1,15 @@
+{
+  "name": "maxis-strike",
+  "version": "7.0.0",
+  "description": "MAXIS STRIKE - 3D FPS with Impact Engine, Map Editor, Physics",
+  "main": "server.js",
+  "scripts": {
+    "start": "node server.js"
+  },
+  "dependencies": {
+    "ws": "^8.14.2"
+  },
+  "engines": {
+    "node": ">=18.0.0"
+  }
+}
