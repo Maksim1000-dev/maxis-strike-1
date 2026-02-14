@@ -106,38 +106,55 @@ const MAP_CONFIGS = {
 };
 
 // ═══════════════════════════════════════════
-// ANTICHEAT
+// ANTICHEAT (Fixed for respawn)
 // ═══════════════════════════════════════════
 
-const ANTICHEAT = { MAX_SPEED: 25, MAX_TELEPORT: 20, MAX_FIRE_RATE: 40 };
+const ANTICHEAT = { MAX_SPEED: 25, MAX_TELEPORT: 50, MAX_FIRE_RATE: 40 };
 
 function anticheatCheck(client, room, data) {
   const player = room.players[client.id];
   if (!player) return { valid: true };
   const now = Date.now();
+  
   if (!player.ac) {
-    player.ac = { lastPos: { x: player.x, y: player.y, z: player.z }, lastPosTime: now, lastShot: 0, violations: 0 };
+    player.ac = { lastPos: { x: player.x, y: player.y, z: player.z }, lastPosTime: now, lastShot: 0, violations: 0, respawnTime: now };
   }
   const ac = player.ac;
+  
+  // Skip teleport check for 2 seconds after respawn
+  if (now - ac.respawnTime < 2000) {
+    ac.lastPos = { x: data.x, y: data.y, z: data.z };
+    ac.lastPosTime = now;
+    return { valid: true };
+  }
+  
   if (data.type === 'move') {
     const dx = data.x - ac.lastPos.x, dy = data.y - ac.lastPos.y, dz = data.z - ac.lastPos.z;
     const dist = Math.sqrt(dx*dx + dy*dy + dz*dz);
     const dt = (now - ac.lastPosTime) / 1000;
+    
     if (dist > ANTICHEAT.MAX_TELEPORT) {
       ac.violations++;
-      if (ac.violations > 5) return { valid: false, reason: 'Teleport detected', kick: true };
-      return { valid: false, reason: 'Invalid position' };
+      if (ac.violations > 10) return { valid: false, reason: 'Teleport detected', kick: true };
+      // Don't kick, just ignore this move
+      return { valid: true };
     }
     if (dt > 0.01) {
       const speed = dist / dt;
-      if (speed > ANTICHEAT.MAX_SPEED) { ac.violations++; if (ac.violations > 10) return { valid: false, reason: 'Speed hack', kick: true }; }
+      if (speed > ANTICHEAT.MAX_SPEED) { 
+        ac.violations++; 
+        if (ac.violations > 20) return { valid: false, reason: 'Speed hack', kick: true };
+      }
     }
     ac.lastPos = { x: data.x, y: data.y, z: data.z };
     ac.lastPosTime = now;
   }
   if (data.type === 'shoot') {
     const timeSince = now - ac.lastShot;
-    if (timeSince < ANTICHEAT.MAX_FIRE_RATE && data.weapon !== 'rpg') { ac.violations++; return { valid: false, reason: 'Fire rate' }; }
+    if (timeSince < ANTICHEAT.MAX_FIRE_RATE && data.weapon !== 'rpg' && data.weapon !== 'knife') { 
+      ac.violations++; 
+      return { valid: false, reason: 'Fire rate' }; 
+    }
     ac.lastShot = now;
   }
   return { valid: true };
@@ -790,6 +807,13 @@ function respawnPlayer(room, playerId) {
   player.hp = 100; player.alive = true;
   player.x = spawn.x; player.y = spawn.y; player.z = spawn.z;
   player.killStreak = 0; player.weapon = 'knife'; player.weapons = ['knife'];
+
+  // Reset anticheat for respawn
+  if (player.ac) {
+    player.ac.respawnTime = Date.now();
+    player.ac.lastPos = { x: spawn.x, y: spawn.y, z: spawn.z };
+    player.ac.violations = 0;
+  }
 
   broadcastToRoom(room.id, { type: 'respawn', id: playerId, x: spawn.x, y: spawn.y, z: spawn.z, money: player.money });
 }
