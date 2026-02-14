@@ -10,6 +10,7 @@ const PORT = process.env.PORT || 3000;
 
 const rooms = {};
 const clients = new Map();
+const customMaps = {}; // Store custom maps
 
 const WEAPON_PRICES = {
   knife: 0, usp: 500, deagle: 1500, ak47: 2000, m4a1: 2500, awp: 4000, rpg: 5000
@@ -106,61 +107,6 @@ const MAP_CONFIGS = {
 };
 
 // ═══════════════════════════════════════════
-// ANTICHEAT (Fixed for respawn)
-// ═══════════════════════════════════════════
-
-const ANTICHEAT = { MAX_SPEED: 25, MAX_TELEPORT: 50, MAX_FIRE_RATE: 40 };
-
-function anticheatCheck(client, room, data) {
-  const player = room.players[client.id];
-  if (!player) return { valid: true };
-  const now = Date.now();
-  
-  if (!player.ac) {
-    player.ac = { lastPos: { x: player.x, y: player.y, z: player.z }, lastPosTime: now, lastShot: 0, violations: 0, respawnTime: now };
-  }
-  const ac = player.ac;
-  
-  // Skip teleport check for 2 seconds after respawn
-  if (now - ac.respawnTime < 2000) {
-    ac.lastPos = { x: data.x, y: data.y, z: data.z };
-    ac.lastPosTime = now;
-    return { valid: true };
-  }
-  
-  if (data.type === 'move') {
-    const dx = data.x - ac.lastPos.x, dy = data.y - ac.lastPos.y, dz = data.z - ac.lastPos.z;
-    const dist = Math.sqrt(dx*dx + dy*dy + dz*dz);
-    const dt = (now - ac.lastPosTime) / 1000;
-    
-    if (dist > ANTICHEAT.MAX_TELEPORT) {
-      ac.violations++;
-      if (ac.violations > 10) return { valid: false, reason: 'Teleport detected', kick: true };
-      // Don't kick, just ignore this move
-      return { valid: true };
-    }
-    if (dt > 0.01) {
-      const speed = dist / dt;
-      if (speed > ANTICHEAT.MAX_SPEED) { 
-        ac.violations++; 
-        if (ac.violations > 20) return { valid: false, reason: 'Speed hack', kick: true };
-      }
-    }
-    ac.lastPos = { x: data.x, y: data.y, z: data.z };
-    ac.lastPosTime = now;
-  }
-  if (data.type === 'shoot') {
-    const timeSince = now - ac.lastShot;
-    if (timeSince < ANTICHEAT.MAX_FIRE_RATE && data.weapon !== 'rpg' && data.weapon !== 'knife') { 
-      ac.violations++; 
-      return { valid: false, reason: 'Fire rate' }; 
-    }
-    ac.lastShot = now;
-  }
-  return { valid: true };
-}
-
-// ═══════════════════════════════════════════
 // HTTP SERVER
 // ═══════════════════════════════════════════
 
@@ -178,6 +124,9 @@ const server = http.createServer((req, res) => {
     }));
     res.writeHead(200, { 'Content-Type': 'application/json' });
     res.end(JSON.stringify(list));
+  } else if (req.url === '/api/custommaps') {
+    res.writeHead(200, { 'Content-Type': 'application/json' });
+    res.end(JSON.stringify(Object.keys(customMaps)));
   } else { res.writeHead(404); res.end('Not Found'); }
 });
 
@@ -190,6 +139,7 @@ const wss = new WebSocket.Server({ server });
 console.log('═══════════════════════════════════════');
 console.log('  MAXIS STRIKE Server v6.0');
 console.log('  Port:', PORT);
+console.log('  NO ANTICHEAT MODE - Stable gameplay');
 console.log('═══════════════════════════════════════');
 
 wss.on('connection', (ws) => {
@@ -224,17 +174,6 @@ wss.on('connection', (ws) => {
 // ═══════════════════════════════════════════
 
 function handleMessage(ws, client, data) {
-  if (client.roomId && rooms[client.roomId]) {
-    const room = rooms[client.roomId];
-    if (data.type === 'move' || data.type === 'shoot') {
-      const ac = anticheatCheck(client, room, data);
-      if (!ac.valid) {
-        if (ac.kick) { ws.send(JSON.stringify({ type: 'kicked', reason: ac.reason })); ws.close(); }
-        return;
-      }
-    }
-  }
-
   switch(data.type) {
     case 'getRooms': sendRoomList(ws); break;
     case 'createRoom': createRoom(ws, client, data); break;
@@ -257,6 +196,51 @@ function handleMessage(ws, client, data) {
     case 'pushObject': handlePushObject(ws, client, data); break;
     case 'cheat': handleCheat(ws, client, data); break;
     case 'rescueHostage': handleRescueHostage(ws, client, data); break;
+    case 'publishMap': handlePublishMap(ws, client, data); break;
+    case 'getCustomMaps': sendCustomMaps(ws); break;
+    case 'getCustomMap': sendCustomMapData(ws, data.mapName); break;
+  }
+}
+
+// ═══════════════════════════════════════════
+// CUSTOM MAPS
+// ═══════════════════════════════════════════
+
+function handlePublishMap(ws, client, data) {
+  if (!data.mapData || !data.mapData.name) return;
+  const mapName = 'CUSTOM_' + data.mapData.name.substring(0, 20).replace(/[^a-zA-Z0-9_]/g, '');
+  customMaps[mapName] = data.mapData;
+  
+  // Create config for custom map
+  MAP_CONFIGS[mapName] = {
+    maxPlayers: data.mapData.maxPlayers || 10,
+    spawnT: data.mapData.spawnsT || [{ x: -10, y: 1.7, z: 0 }],
+    spawnCT: data.mapData.spawnsCT || [{ x: 10, y: 1.7, z: 0 }],
+    buyZoneT: { x: -10, z: 0, radius: 5 },
+    buyZoneCT: { x: 10, z: 0, radius: 5 },
+    hostagePositions: [],
+    custom: true,
+    customData: data.mapData
+  };
+  
+  ws.send(JSON.stringify({ type: 'mapPublished', mapName }));
+  broadcastCustomMaps();
+}
+
+function sendCustomMaps(ws) {
+  ws.send(JSON.stringify({ type: 'customMapsList', maps: Object.keys(customMaps) }));
+}
+
+function sendCustomMapData(ws, mapName) {
+  if (customMaps[mapName]) {
+    ws.send(JSON.stringify({ type: 'customMapData', mapName, data: customMaps[mapName] }));
+  }
+}
+
+function broadcastCustomMaps() {
+  const msg = JSON.stringify({ type: 'customMapsList', maps: Object.keys(customMaps) });
+  for (const [ws, c] of clients.entries()) {
+    if (ws.readyState === WebSocket.OPEN) ws.send(msg);
   }
 }
 
@@ -274,16 +258,18 @@ function sendRoomList(ws) {
 
 function createRoom(ws, client, data) {
   const roomId = nextRoomId++;
-  const mapCfg = MAP_CONFIGS[data.map] || MAP_CONFIGS['MS_START'];
+  const mapName = data.map || 'MS_START';
+  const mapCfg = MAP_CONFIGS[mapName] || MAP_CONFIGS['MS_START'];
 
   const room = {
     id: roomId, name: (data.name || 'Server').substring(0, 24),
-    password: data.password || '', map: data.map || 'MS_START',
+    password: data.password || '', map: mapName,
     mode: data.mode || 'deathmatch', maxPlayers: mapCfg.maxPlayers,
     players: {}, destructibleWalls: [], physicsObjects: [],
     scores: { T: 0, CT: 0 }, firstBloodTaken: false,
     mapSize: mapCfg.baseSize || 50,
-    hostages: []
+    hostages: [],
+    customMapData: mapCfg.customData || null
   };
 
   // Generate hostages for hostage mode
@@ -294,14 +280,14 @@ function createRoom(ws, client, data) {
     }));
   }
 
-  if (data.map === 'MS_ARENA_BETA') {
+  if (mapName === 'MS_ARENA_BETA') {
     room.destructibleWalls = generateWalls(room.mapSize);
-    room.physicsObjects = generatePhysics(room.mapSize);
+    room.physicsObjects = generatePhysics(room.mapSize, 0);
   }
 
   // Add physics objects (barrels) to ALL maps
-  if (data.map !== 'MS_ARENA_BETA') {
-    room.physicsObjects = generateMapPhysics(data.map);
+  if (mapName !== 'MS_ARENA_BETA') {
+    room.physicsObjects = generateMapPhysics(mapName);
   }
 
   rooms[roomId] = room;
@@ -316,7 +302,8 @@ function generateMapPhysics(mapName) {
   if (mapName === 'MS_START') {
     const positions = [
       { x: -15, z: 0 }, { x: 15, z: 0 },
-      { x: 0, z: -20 }, { x: 0, z: 20 }
+      { x: 0, z: -20 }, { x: 0, z: 20 },
+      { x: -30, z: -30 }, { x: 30, z: 30 }
     ];
     for (const pos of positions) {
       objects.push({
@@ -327,7 +314,8 @@ function generateMapPhysics(mapName) {
   } else if (mapName === 'MS_DUST') {
     const positions = [
       { x: -20, z: -15 }, { x: 20, z: 15 },
-      { x: -50, z: 0 }, { x: 50, z: 0 }
+      { x: -50, z: 0 }, { x: 50, z: 0 },
+      { x: 0, z: -30 }, { x: 0, z: 30 }
     ];
     for (const pos of positions) {
       objects.push({
@@ -357,22 +345,42 @@ function generateWalls(size) {
   return walls;
 }
 
-function generatePhysics(size) {
+function generatePhysics(size, playerCount) {
   const objects = [];
   let id = 1;
+  
+  // Base barrels
   const barrelPositions = [
     { x: -6, z: -6 }, { x: 6, z: 6 }, { x: -6, z: 6 }, { x: 6, z: -6 },
     { x: 0, z: -15 }, { x: 0, z: 15 }
   ];
+  
+  // Add more based on player count
+  for (let i = 0; i < playerCount; i++) {
+    const angle = (i / Math.max(playerCount, 1)) * Math.PI * 2;
+    const dist = size * 0.3 + Math.random() * 5;
+    barrelPositions.push({ x: Math.cos(angle) * dist, z: Math.sin(angle) * dist });
+  }
+  
   for (const pos of barrelPositions) {
     objects.push({
       id: id++, type: 'barrel', x: pos.x, y: 0.6, z: pos.z,
       vx: 0, vy: 0, vz: 0, radius: 0.5, mass: 50, destroyed: false
     });
   }
+  
+  // Crates
   const cratePositions = [
     { x: -12, z: -8 }, { x: 12, z: 8 }, { x: -12, z: 8 }, { x: 12, z: -8 }
   ];
+  
+  // Add more crates based on player count
+  for (let i = 0; i < Math.floor(playerCount / 2); i++) {
+    const angle = ((i + 0.5) / Math.max(playerCount / 2, 1)) * Math.PI * 2;
+    const dist = size * 0.35;
+    cratePositions.push({ x: Math.cos(angle) * dist, z: Math.sin(angle) * dist });
+  }
+  
   for (const pos of cratePositions) {
     objects.push({
       id: id++, type: 'crate', x: pos.x, y: 0.75, z: pos.z,
@@ -394,15 +402,29 @@ function joinRoom(ws, client, data) {
   const ctCount = Object.values(room.players).filter(p => p.team === 'CT').length;
   const team = tCount <= ctCount ? 'T' : 'CT';
 
-  const mapCfg = MAP_CONFIGS[room.map];
+  const mapCfg = MAP_CONFIGS[room.map] || MAP_CONFIGS['MS_START'];
   const spawns = team === 'T' ? mapCfg.spawnT : mapCfg.spawnCT;
   const spawnIdx = Object.values(room.players).filter(p => p.team === team).length % spawns.length;
   const spawn = spawns[spawnIdx];
 
+  // MS_ARENA_BETA: expand map and add objects
   if (room.map === 'MS_ARENA_BETA') {
+    const oldSize = room.mapSize;
     const pc = Object.keys(room.players).length + 1;
     room.mapSize = mapCfg.baseSize + (pc * mapCfg.expandPerPlayer);
-    broadcastToRoom(room.id, { type: 'mapResize', size: room.mapSize });
+    
+    // Generate new objects when map expands
+    if (room.mapSize > oldSize) {
+      room.physicsObjects = generatePhysics(room.mapSize, pc);
+      room.destructibleWalls = generateWalls(room.mapSize);
+    }
+    
+    broadcastToRoom(room.id, { 
+      type: 'mapResize', 
+      size: room.mapSize,
+      physicsObjects: room.physicsObjects,
+      destructibleWalls: room.destructibleWalls
+    });
   }
 
   const player = {
@@ -425,7 +447,8 @@ function joinRoom(ws, client, data) {
     player, players: room.players,
     destructibleWalls: room.destructibleWalls, physicsObjects: room.physicsObjects,
     scores: room.scores, mapSize: room.mapSize, weaponPrices: WEAPON_PRICES,
-    hostages: room.hostages
+    hostages: room.hostages,
+    customMapData: room.customMapData
   }));
 
   broadcastToRoom(room.id, { type: 'playerJoin', player }, client.id);
@@ -454,8 +477,19 @@ function leaveRoom(ws, client) {
   if (room.map === 'MS_ARENA_BETA') {
     const mapCfg = MAP_CONFIGS[room.map];
     const pc = Object.keys(room.players).length;
-    room.mapSize = mapCfg.baseSize + (pc * mapCfg.expandPerPlayer);
-    broadcastToRoom(room.id, { type: 'mapResize', size: room.mapSize });
+    const newSize = mapCfg.baseSize + (pc * mapCfg.expandPerPlayer);
+    
+    if (newSize < room.mapSize) {
+      room.mapSize = newSize;
+      room.physicsObjects = generatePhysics(room.mapSize, pc);
+      room.destructibleWalls = generateWalls(room.mapSize);
+      broadcastToRoom(room.id, { 
+        type: 'mapResize', 
+        size: room.mapSize,
+        physicsObjects: room.physicsObjects,
+        destructibleWalls: room.destructibleWalls
+      });
+    }
   }
 
   if (Object.keys(room.players).length === 0) {
@@ -477,6 +511,21 @@ function handleMove(ws, client, data) {
   const dx = data.x - p.x, dz = data.z - p.z;
   p.moving = Math.sqrt(dx*dx + dz*dz) > 0.05;
   p.x = data.x; p.y = data.y; p.z = data.z; p.rx = data.rx; p.ry = data.ry;
+  
+  // Push physics objects when walking
+  for (const obj of room.physicsObjects) {
+    if (obj.destroyed) continue;
+    const odx = obj.x - p.x, odz = obj.z - p.z;
+    const dist = Math.sqrt(odx*odx + odz*odz);
+    const pushR = (obj.radius || 0.75) + 0.6;
+    if (dist < pushR && dist > 0) {
+      const pushStr = (pushR - dist) * 3;
+      obj.vx += (odx / dist) * pushStr;
+      obj.vz += (odz / dist) * pushStr;
+      obj.vy += 0.5;
+    }
+  }
+  
   broadcastToRoom(room.id, {
     type: 'playerMove', id: client.id,
     x: data.x, y: data.y, z: data.z, rx: data.rx, ry: data.ry,
@@ -509,7 +558,6 @@ function handleMove(ws, client, data) {
         }
       }
     }
-    // Sync hostage positions periodically via state
   }
 }
 
@@ -520,6 +568,7 @@ function handleShoot(ws, client, data) {
   if (!shooter.alive) return;
   const weapon = data.weapon;
   const damage = WEAPON_DAMAGE[weapon] || 25;
+  const pushForce = WEAPON_PUSH_FORCE[weapon] || 2;
 
   broadcastToRoom(room.id, {
     type: 'playerShoot', id: client.id, x: data.x, y: data.y, z: data.z,
@@ -528,7 +577,6 @@ function handleShoot(ws, client, data) {
 
   // Push physics objects with bullet force
   if (weapon !== 'rpg' && weapon !== 'knife') {
-    const pushForce = WEAPON_PUSH_FORCE[weapon] || 2;
     for (const obj of room.physicsObjects) {
       if (obj.destroyed) continue;
       const hitDist = checkRayHitBox(
@@ -537,9 +585,9 @@ function handleShoot(ws, client, data) {
         obj.type === 'barrel' ? obj.radius : obj.size / 2
       );
       if (hitDist !== null && hitDist < 80) {
-        obj.vx += data.dx * pushForce;
-        obj.vz += data.dz * pushForce;
-        obj.vy += 1;
+        obj.vx += data.dx * pushForce * 2;
+        obj.vz += data.dz * pushForce * 2;
+        obj.vy += 2;
         broadcastToRoom(room.id, { type: 'physicsUpdate', objects: room.physicsObjects.filter(o => !o.destroyed) });
         break;
       }
@@ -559,6 +607,13 @@ function handleShoot(ws, client, data) {
       const headshot = Math.abs((data.y + data.dy * dist) - (target.y + 0.5)) < 0.3;
       const finalDmg = headshot ? damage * 3 : damage;
       target.hp -= finalDmg;
+
+      // Send blood effect
+      broadcastToRoom(room.id, { 
+        type: 'bloodEffect', 
+        x: target.x, y: target.y, z: target.z,
+        headshot 
+      });
 
       if (target.hp <= 0) {
         handleKill(room, client, shooter, target, parseInt(pid), weapon, headshot);
@@ -682,9 +737,9 @@ function handlePushObject(ws, client, data) {
   if (!room) return;
   const obj = room.physicsObjects.find(o => o.id === data.objId && !o.destroyed);
   if (!obj) return;
-  obj.vx += (data.dx || 0) * 3;
-  obj.vz += (data.dz || 0) * 3;
-  obj.vy += 0.5;
+  obj.vx += (data.dx || 0) * 5;
+  obj.vz += (data.dz || 0) * 5;
+  obj.vy += 1;
   broadcastToRoom(room.id, { type: 'physicsUpdate', objects: room.physicsObjects.filter(o => !o.destroyed) });
 }
 
@@ -718,7 +773,7 @@ function handleBuyWeapon(ws, client, data) {
   if (price === undefined) { ws.send(JSON.stringify({ type: 'buyError', error: 'Unknown weapon' })); return; }
   if (player.weapons.includes(weapon)) { ws.send(JSON.stringify({ type: 'buyError', error: 'Already owned' })); return; }
 
-  const mapCfg = MAP_CONFIGS[room.map];
+  const mapCfg = MAP_CONFIGS[room.map] || MAP_CONFIGS['MS_START'];
   const buyZone = player.team === 'T' ? mapCfg.buyZoneT : mapCfg.buyZoneCT;
   const dx = player.x - buyZone.x, dz = player.z - buyZone.z;
   if (Math.sqrt(dx*dx + dz*dz) > buyZone.radius) { ws.send(JSON.stringify({ type: 'buyError', error: 'Not in buy zone!' })); return; }
@@ -757,7 +812,7 @@ function addChat(roomId, name, msg) {
 }
 
 // ═══════════════════════════════════════════
-// CHEAT HANDLER (SERVER-SIDE)
+// CHEAT HANDLER (SERVER-SIDE - WORKS!)
 // ═══════════════════════════════════════════
 
 function handleCheat(ws, client, data) {
@@ -768,6 +823,7 @@ function handleCheat(ws, client, data) {
   if (data.code === 'money5000') {
     player.money += 5000;
     ws.send(JSON.stringify({ type: 'cheatApplied', code: 'money5000', money: player.money }));
+    console.log(`CHEAT: Player ${client.id} got +5000 money (now ${player.money})`);
     // Check rich achievement
     if (player.money >= 10000 && !client.achievements.includes('RICH')) {
       client.achievements.push('RICH');
@@ -800,20 +856,13 @@ function handleRescueHostage(ws, client, data) {
 function respawnPlayer(room, playerId) {
   if (!room || !room.players[playerId]) return;
   const player = room.players[playerId];
-  const mapCfg = MAP_CONFIGS[room.map];
+  const mapCfg = MAP_CONFIGS[room.map] || MAP_CONFIGS['MS_START'];
   const spawns = player.team === 'T' ? mapCfg.spawnT : mapCfg.spawnCT;
   const spawn = spawns[Math.floor(Math.random() * spawns.length)];
 
   player.hp = 100; player.alive = true;
   player.x = spawn.x; player.y = spawn.y; player.z = spawn.z;
   player.killStreak = 0; player.weapon = 'knife'; player.weapons = ['knife'];
-
-  // Reset anticheat for respawn
-  if (player.ac) {
-    player.ac.respawnTime = Date.now();
-    player.ac.lastPos = { x: spawn.x, y: spawn.y, z: spawn.z };
-    player.ac.violations = 0;
-  }
 
   broadcastToRoom(room.id, { type: 'respawn', id: playerId, x: spawn.x, y: spawn.y, z: spawn.z, money: player.money });
 }
@@ -894,21 +943,6 @@ setInterval(() => {
         if (obj.y < groundY) { obj.y = groundY; obj.vy = -obj.vy * 0.3; obj.vx *= 0.8; obj.vz *= 0.8; }
         obj.vx *= 0.95; obj.vz *= 0.95;
         changed = true;
-      }
-
-      // Player push collision
-      for (const pid in room.players) {
-        const p = room.players[pid];
-        if (!p.alive) continue;
-        const dx = obj.x - p.x, dz = obj.z - p.z;
-        const dist = Math.sqrt(dx*dx + dz*dz);
-        const pushR = (obj.radius || 0.75) + 0.5;
-        if (dist < pushR && dist > 0) {
-          const pushStr = (pushR - dist) * 2;
-          obj.vx += (dx / dist) * pushStr;
-          obj.vz += (dz / dist) * pushStr;
-          changed = true;
-        }
       }
     }
     if (changed) {
