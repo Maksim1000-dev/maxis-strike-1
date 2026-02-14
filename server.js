@@ -1,5 +1,5 @@
-// MAXIS STRIKE Server v5.1
-// Fixed spawns, barrel collisions, maps, cheat support
+// MAXIS STRIKE Server v6.0
+// Physics push, server cheat, hostages, walking animation sync
 
 const http = require('http');
 const fs = require('fs');
@@ -10,7 +10,6 @@ const PORT = process.env.PORT || 3000;
 
 const rooms = {};
 const clients = new Map();
-const leaderboard = {};
 
 const WEAPON_PRICES = {
   knife: 0, usp: 500, deagle: 1500, ak47: 2000, m4a1: 2500, awp: 4000, rpg: 5000
@@ -18,6 +17,10 @@ const WEAPON_PRICES = {
 
 const WEAPON_DAMAGE = {
   knife: 55, usp: 25, deagle: 45, ak47: 27, m4a1: 30, awp: 100, rpg: 150
+};
+
+const WEAPON_PUSH_FORCE = {
+  knife: 0, usp: 2, deagle: 4, ak47: 3, m4a1: 3, awp: 8, rpg: 0
 };
 
 const achievements = {
@@ -33,7 +36,7 @@ let nextRoomId = 1;
 let nextPlayerId = 1;
 
 // ═══════════════════════════════════════════
-// MAP CONFIGS — FIXED SPAWNS
+// MAP CONFIGS
 // ═══════════════════════════════════════════
 
 const MAP_CONFIGS = {
@@ -52,7 +55,11 @@ const MAP_CONFIGS = {
       { x: 25, y: 1.7, z: 6 }, { x: 25, y: 1.7, z: -6 }
     ],
     buyZoneT: { x: -25, z: 0, radius: 8 },
-    buyZoneCT: { x: 25, z: 0, radius: 8 }
+    buyZoneCT: { x: 25, z: 0, radius: 8 },
+    hostagePositions: [
+      { x: -5, y: 0, z: -20 },
+      { x: 5, y: 0, z: 20 }
+    ]
   },
   'MS_DUST': {
     maxPlayers: 16,
@@ -69,7 +76,11 @@ const MAP_CONFIGS = {
       { x: 43, y: 1.7, z: 43 }, { x: 47, y: 1.7, z: 47 }
     ],
     buyZoneT: { x: -45, z: -45, radius: 10 },
-    buyZoneCT: { x: 45, z: 45, radius: 10 }
+    buyZoneCT: { x: 45, z: 45, radius: 10 },
+    hostagePositions: [
+      { x: -10, y: 0, z: -40 },
+      { x: 10, y: 0, z: 40 }
+    ]
   },
   'MS_ARENA_BETA': {
     maxPlayers: 10,
@@ -86,7 +97,11 @@ const MAP_CONFIGS = {
       { x: 10, y: 1.7, z: -3 }
     ],
     buyZoneT: { x: -15, z: 0, radius: 6 },
-    buyZoneCT: { x: 15, z: 0, radius: 6 }
+    buyZoneCT: { x: 15, z: 0, radius: 6 },
+    hostagePositions: [
+      { x: 0, y: 0, z: -10 },
+      { x: 0, y: 0, z: 10 }
+    ]
   }
 };
 
@@ -156,7 +171,7 @@ const server = http.createServer((req, res) => {
 const wss = new WebSocket.Server({ server });
 
 console.log('═══════════════════════════════════════');
-console.log('  MAXIS STRIKE Server v5.1');
+console.log('  MAXIS STRIKE Server v6.0');
 console.log('  Port:', PORT);
 console.log('═══════════════════════════════════════');
 
@@ -222,6 +237,9 @@ function handleMessage(ws, client, data) {
     case 'chat': handleChat(ws, client, data); break;
     case 'rpgExplode': handleRPGExplosion(ws, client, data); break;
     case 'destroyWall': handleDestroyWall(ws, client, data); break;
+    case 'pushObject': handlePushObject(ws, client, data); break;
+    case 'cheat': handleCheat(ws, client, data); break;
+    case 'rescueHostage': handleRescueHostage(ws, client, data); break;
   }
 }
 
@@ -247,12 +265,26 @@ function createRoom(ws, client, data) {
     mode: data.mode || 'deathmatch', maxPlayers: mapCfg.maxPlayers,
     players: {}, destructibleWalls: [], physicsObjects: [],
     scores: { T: 0, CT: 0 }, firstBloodTaken: false,
-    mapSize: mapCfg.baseSize || 50
+    mapSize: mapCfg.baseSize || 50,
+    hostages: []
   };
+
+  // Generate hostages for hostage mode
+  if (room.mode === 'hostage' && mapCfg.hostagePositions) {
+    room.hostages = mapCfg.hostagePositions.map((pos, i) => ({
+      id: i + 1, x: pos.x, y: pos.y, z: pos.z,
+      rescued: false, followingPlayer: null
+    }));
+  }
 
   if (data.map === 'MS_ARENA_BETA') {
     room.destructibleWalls = generateWalls(room.mapSize);
     room.physicsObjects = generatePhysics(room.mapSize);
+  }
+
+  // Add physics objects (barrels) to ALL maps
+  if (data.map !== 'MS_ARENA_BETA') {
+    room.physicsObjects = generateMapPhysics(data.map);
   }
 
   rooms[roomId] = room;
@@ -261,10 +293,38 @@ function createRoom(ws, client, data) {
   broadcastRoomList();
 }
 
+function generateMapPhysics(mapName) {
+  const objects = [];
+  let id = 1;
+  if (mapName === 'MS_START') {
+    const positions = [
+      { x: -15, z: 0 }, { x: 15, z: 0 },
+      { x: 0, z: -20 }, { x: 0, z: 20 }
+    ];
+    for (const pos of positions) {
+      objects.push({
+        id: id++, type: 'barrel', x: pos.x, y: 0.6, z: pos.z,
+        vx: 0, vy: 0, vz: 0, radius: 0.5, mass: 50, destroyed: false
+      });
+    }
+  } else if (mapName === 'MS_DUST') {
+    const positions = [
+      { x: -20, z: -15 }, { x: 20, z: 15 },
+      { x: -50, z: 0 }, { x: 50, z: 0 }
+    ];
+    for (const pos of positions) {
+      objects.push({
+        id: id++, type: 'barrel', x: pos.x, y: 0.6, z: pos.z,
+        vx: 0, vy: 0, vz: 0, radius: 0.5, mass: 50, destroyed: false
+      });
+    }
+  }
+  return objects;
+}
+
 function generateWalls(size) {
   const walls = [];
   let id = 1;
-  // Ring of destructible walls
   for (let i = 0; i < 8; i++) {
     const angle = (i / 8) * Math.PI * 2;
     const dist = size * 0.45;
@@ -273,7 +333,6 @@ function generateWalls(size) {
       width: 4, height: 4, depth: 0.5, hp: 100, destroyed: false
     });
   }
-  // Cross walls in center area
   walls.push({ id: id++, x: 0, y: 2, z: -8, width: 5, height: 4, depth: 0.5, hp: 100, destroyed: false });
   walls.push({ id: id++, x: 0, y: 2, z: 8, width: 5, height: 4, depth: 0.5, hp: 100, destroyed: false });
   walls.push({ id: id++, x: -8, y: 2, z: 0, width: 0.5, height: 4, depth: 5, hp: 100, destroyed: false });
@@ -284,7 +343,6 @@ function generateWalls(size) {
 function generatePhysics(size) {
   const objects = [];
   let id = 1;
-  // Few barrels — NOT too many
   const barrelPositions = [
     { x: -6, z: -6 }, { x: 6, z: 6 }, { x: -6, z: 6 }, { x: 6, z: -6 },
     { x: 0, z: -15 }, { x: 0, z: 15 }
@@ -295,7 +353,6 @@ function generatePhysics(size) {
       vx: 0, vy: 0, vz: 0, radius: 0.5, mass: 50, destroyed: false
     });
   }
-  // Few crates
   const cratePositions = [
     { x: -12, z: -8 }, { x: 12, z: 8 }, { x: -12, z: 8 }, { x: 12, z: -8 }
   ];
@@ -336,7 +393,8 @@ function joinRoom(ws, client, data) {
     x: spawn.x, y: spawn.y, z: spawn.z,
     rx: 0, ry: team === 'T' ? 0 : Math.PI,
     hp: 100, money: 800, kills: 0, deaths: 0,
-    alive: true, weapon: 'knife', weapons: ['knife'], killStreak: 0
+    alive: true, weapon: 'knife', weapons: ['knife'], killStreak: 0,
+    moving: false
   };
 
   room.players[client.id] = player;
@@ -349,7 +407,8 @@ function joinRoom(ws, client, data) {
     type: 'joinedRoom', roomId: room.id, roomName: room.name, map: room.map, mode: room.mode,
     player, players: room.players,
     destructibleWalls: room.destructibleWalls, physicsObjects: room.physicsObjects,
-    scores: room.scores, mapSize: room.mapSize, weaponPrices: WEAPON_PRICES
+    scores: room.scores, mapSize: room.mapSize, weaponPrices: WEAPON_PRICES,
+    hostages: room.hostages
   }));
 
   broadcastToRoom(room.id, { type: 'playerJoin', player }, client.id);
@@ -360,6 +419,16 @@ function leaveRoom(ws, client) {
   if (!client.roomId) return;
   const room = rooms[client.roomId];
   if (!room) { client.roomId = null; return; }
+
+  // Release any hostages following this player
+  if (room.hostages) {
+    for (const h of room.hostages) {
+      if (h.followingPlayer === client.id) {
+        h.followingPlayer = null;
+        broadcastToRoom(room.id, { type: 'hostageUpdate', hostages: room.hostages });
+      }
+    }
+  }
 
   broadcastToRoom(room.id, { type: 'playerLeave', id: client.id }, client.id);
   delete room.players[client.id];
@@ -387,8 +456,44 @@ function handleMove(ws, client, data) {
   const room = rooms[client.roomId];
   if (!room || !room.players[client.id]) return;
   const p = room.players[client.id];
+  const wasMoving = p.moving;
+  const dx = data.x - p.x, dz = data.z - p.z;
+  p.moving = Math.sqrt(dx*dx + dz*dz) > 0.05;
   p.x = data.x; p.y = data.y; p.z = data.z; p.rx = data.rx; p.ry = data.ry;
-  broadcastToRoom(room.id, { type: 'playerMove', id: client.id, x: data.x, y: data.y, z: data.z, rx: data.rx, ry: data.ry }, client.id);
+  broadcastToRoom(room.id, {
+    type: 'playerMove', id: client.id,
+    x: data.x, y: data.y, z: data.z, rx: data.rx, ry: data.ry,
+    moving: p.moving
+  }, client.id);
+
+  // Move hostages that follow this player
+  if (room.hostages) {
+    for (const h of room.hostages) {
+      if (h.followingPlayer === client.id) {
+        const hdx = p.x - h.x, hdz = p.z - h.z;
+        const hdist = Math.sqrt(hdx*hdx + hdz*hdz);
+        if (hdist > 2) {
+          h.x += (hdx / hdist) * 0.15;
+          h.z += (hdz / hdist) * 0.15;
+        }
+        // Check if hostage reached CT spawn (rescue zone)
+        const mapCfg = MAP_CONFIGS[room.map];
+        const rzone = mapCfg.buyZoneCT;
+        const rdx = h.x - rzone.x, rdz = h.z - rzone.z;
+        if (Math.sqrt(rdx*rdx + rdz*rdz) < rzone.radius) {
+          h.rescued = true;
+          h.followingPlayer = null;
+          room.scores.CT++;
+          broadcastToRoom(room.id, {
+            type: 'hostageRescued', hostageId: h.id,
+            scores: room.scores, rescuerId: client.id
+          });
+          addChat(room.id, 'SERVER', 'Hostage rescued by ' + p.name + '!');
+        }
+      }
+    }
+    // Sync hostage positions periodically via state
+  }
 }
 
 function handleShoot(ws, client, data) {
@@ -403,6 +508,26 @@ function handleShoot(ws, client, data) {
     type: 'playerShoot', id: client.id, x: data.x, y: data.y, z: data.z,
     dx: data.dx, dy: data.dy, dz: data.dz, weapon
   }, client.id);
+
+  // Push physics objects with bullet force
+  if (weapon !== 'rpg' && weapon !== 'knife') {
+    const pushForce = WEAPON_PUSH_FORCE[weapon] || 2;
+    for (const obj of room.physicsObjects) {
+      if (obj.destroyed) continue;
+      const hitDist = checkRayHitBox(
+        data.x, data.y, data.z, data.dx, data.dy, data.dz,
+        obj.x, obj.y, obj.z,
+        obj.type === 'barrel' ? obj.radius : obj.size / 2
+      );
+      if (hitDist !== null && hitDist < 80) {
+        obj.vx += data.dx * pushForce;
+        obj.vz += data.dz * pushForce;
+        obj.vy += 1;
+        broadcastToRoom(room.id, { type: 'physicsUpdate', objects: room.physicsObjects.filter(o => !o.destroyed) });
+        break;
+      }
+    }
+  }
 
   if (weapon === 'rpg') return;
 
@@ -439,6 +564,13 @@ function handleKill(room, client, shooter, target, targetId, weapon, headshot) {
 
   const targetClient = getClientByPlayerId(targetId);
   if (targetClient) { targetClient.stats.killStreak = 0; targetClient.stats.deaths++; }
+
+  // Release hostages from dead player
+  if (room.hostages) {
+    for (const h of room.hostages) {
+      if (h.followingPlayer === targetId) h.followingPlayer = null;
+    }
+  }
 
   const killCamData = {
     killerId: client.id, killerName: shooter.name,
@@ -528,6 +660,17 @@ function handleRPGExplosion(ws, client, data) {
   broadcastToRoom(room.id, { type: 'explosion', x: data.x, y: data.y, z: data.z, radius: explosionRadius });
 }
 
+function handlePushObject(ws, client, data) {
+  const room = rooms[client.roomId];
+  if (!room) return;
+  const obj = room.physicsObjects.find(o => o.id === data.objId && !o.destroyed);
+  if (!obj) return;
+  obj.vx += (data.dx || 0) * 3;
+  obj.vz += (data.dz || 0) * 3;
+  obj.vy += 0.5;
+  broadcastToRoom(room.id, { type: 'physicsUpdate', objects: room.physicsObjects.filter(o => !o.destroyed) });
+}
+
 function handleDestroyWall(ws, client, data) {
   const room = rooms[client.roomId];
   if (!room || room.map !== 'MS_ARENA_BETA') return;
@@ -592,6 +735,51 @@ function handleChat(ws, client, data) {
   broadcastToRoom(room.id, { type: 'chat', id: client.id, name: client.name, msg: (data.msg || '').substring(0, 100) });
 }
 
+function addChat(roomId, name, msg) {
+  broadcastToRoom(roomId, { type: 'chat', id: 0, name, msg });
+}
+
+// ═══════════════════════════════════════════
+// CHEAT HANDLER (SERVER-SIDE)
+// ═══════════════════════════════════════════
+
+function handleCheat(ws, client, data) {
+  const room = rooms[client.roomId];
+  if (!room || !room.players[client.id]) return;
+  const player = room.players[client.id];
+
+  if (data.code === 'money5000') {
+    player.money += 5000;
+    ws.send(JSON.stringify({ type: 'cheatApplied', code: 'money5000', money: player.money }));
+    // Check rich achievement
+    if (player.money >= 10000 && !client.achievements.includes('RICH')) {
+      client.achievements.push('RICH');
+      ws.send(JSON.stringify({ type: 'newAchievements', achievements: [achievements.RICH] }));
+    }
+  }
+}
+
+// ═══════════════════════════════════════════
+// HOSTAGE
+// ═══════════════════════════════════════════
+
+function handleRescueHostage(ws, client, data) {
+  const room = rooms[client.roomId];
+  if (!room || room.mode !== 'hostage') return;
+  const player = room.players[client.id];
+  if (!player || !player.alive || player.team !== 'CT') return;
+
+  const hostage = room.hostages.find(h => h.id === data.hostageId && !h.rescued && !h.followingPlayer);
+  if (!hostage) return;
+
+  const dx = player.x - hostage.x, dz = player.z - hostage.z;
+  if (Math.sqrt(dx*dx + dz*dz) > 3) return;
+
+  hostage.followingPlayer = client.id;
+  broadcastToRoom(room.id, { type: 'hostageFollow', hostageId: hostage.id, playerId: client.id });
+  addChat(room.id, 'SERVER', player.name + ' is rescuing a hostage!');
+}
+
 function respawnPlayer(room, playerId) {
   if (!room || !room.players[playerId]) return;
   const player = room.players[playerId];
@@ -625,6 +813,11 @@ function checkRayHit(ox, oy, oz, dx, dy, dz, tx, ty, tz, radius) {
   return null;
 }
 
+function checkRayHitBox(ox, oy, oz, dx, dy, dz, tx, ty, tz, halfSize) {
+  // Simple sphere approx for physics objects
+  return checkRayHit(ox, oy, oz, dx, dy, dz, tx, ty, tz, halfSize + 0.2);
+}
+
 function getClientByPlayerId(id) {
   for (const [ws, c] of clients.entries()) { if (c.id === id) return c; }
   return null;
@@ -644,12 +837,7 @@ function sendToPlayer(playerId, data) {
   }
 }
 
-function sendToPlayerWS(playerId, data) {
-  const msg = JSON.stringify(data);
-  for (const [ws, c] of clients.entries()) {
-    if (c.id === playerId && ws.readyState === WebSocket.OPEN) { ws.send(msg); break; }
-  }
-}
+function sendToPlayerWS(playerId, data) { sendToPlayer(playerId, data); }
 
 function broadcastRoomList() {
   const list = Object.values(rooms).map(r => ({
@@ -669,7 +857,7 @@ function broadcastRoomList() {
 setInterval(() => {
   for (const roomId in rooms) {
     const room = rooms[roomId];
-    if (!room.physicsObjects) continue;
+    if (!room.physicsObjects || room.physicsObjects.length === 0) continue;
     let changed = false;
     for (const obj of room.physicsObjects) {
       if (obj.destroyed) continue;
@@ -683,6 +871,21 @@ setInterval(() => {
         obj.vx *= 0.95; obj.vz *= 0.95;
         changed = true;
       }
+
+      // Player push collision
+      for (const pid in room.players) {
+        const p = room.players[pid];
+        if (!p.alive) continue;
+        const dx = obj.x - p.x, dz = obj.z - p.z;
+        const dist = Math.sqrt(dx*dx + dz*dz);
+        const pushR = (obj.radius || 0.75) + 0.5;
+        if (dist < pushR && dist > 0) {
+          const pushStr = (pushR - dist) * 2;
+          obj.vx += (dx / dist) * pushStr;
+          obj.vz += (dz / dist) * pushStr;
+          changed = true;
+        }
+      }
     }
     if (changed) {
       broadcastToRoom(roomId, { type: 'physicsUpdate', objects: room.physicsObjects.filter(o => !o.destroyed) });
@@ -690,22 +893,22 @@ setInterval(() => {
   }
 }, 50);
 
-// State sync
+// State sync (includes hostages)
 setInterval(() => {
   for (const roomId in rooms) {
     const room = rooms[roomId];
     if (Object.keys(room.players).length > 0) {
-      broadcastToRoom(roomId, { type: 'state', players: room.players, scores: room.scores });
+      const stateData = { type: 'state', players: room.players, scores: room.scores };
+      if (room.hostages && room.hostages.length > 0) {
+        stateData.hostages = room.hostages;
+      }
+      broadcastToRoom(roomId, stateData);
     }
   }
 }, 50);
 
 // Ping
 setInterval(() => { wss.clients.forEach(ws => { if (ws.readyState === WebSocket.OPEN) ws.ping(); }); }, 30000);
-
-// ═══════════════════════════════════════════
-// START
-// ═══════════════════════════════════════════
 
 server.listen(PORT, () => {
   console.log(`Server on port ${PORT}`);
