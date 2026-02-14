@@ -623,6 +623,35 @@ function playSound(type){
     osc.frequency.exponentialRampToValueAtTime(800,audioCtx.currentTime+0.3);
     g.gain.value=0.2*vol;g.gain.exponentialRampToValueAtTime(0.001,audioCtx.currentTime+0.4);
     osc.connect(g);osc.start();osc.stop(audioCtx.currentTime+0.4);
+  }else if(type==='knife'){
+    // Swoosh sound for knife
+    const buf=audioCtx.createBuffer(1,audioCtx.sampleRate*0.15,audioCtx.sampleRate);
+    const d=buf.getChannelData(0);
+    for(let i=0;i<d.length;i++){
+      const t=i/d.length;
+      d[i]=(Math.random()*2-1)*0.3*Math.sin(t*Math.PI)*Math.pow(1-t,0.5);
+    }
+    const s=audioCtx.createBufferSource();s.buffer=buf;
+    g.gain.value=0.1*vol;s.connect(g);s.start();
+  }
+}
+
+// Blood particles when hitting player
+function showBloodParticles(x,y,z){
+  for(let i=0;i<15;i++){
+    const bMat=new THREE.MeshBasicMaterial({color:0x8B0000});
+    const b=new THREE.Mesh(new THREE.SphereGeometry(0.03+Math.random()*0.05,4,4),bMat);
+    b.position.set(x,y,z);scene.add(b);
+    const vx=(Math.random()-0.5)*6,vy=Math.random()*4,vz=(Math.random()-0.5)*6;
+    let t=0;
+    (function run(){
+      t+=0.016;
+      b.position.x+=vx*0.016;
+      b.position.y+=vy*0.016-12*t*0.016;
+      b.position.z+=vz*0.016;
+      if(b.position.y<0.02||t>1.5){scene.remove(b);return}
+      requestAnimationFrame(run);
+    })();
   }
 }
 
@@ -770,7 +799,14 @@ function handleMsg(d){
         if(d.weapon==='rpg')launchRocket(d.x,d.y,d.z,d.dx,d.dy,d.dz);
       }break;
     case'hit':hp=d.hp;updateHP();showDmg(d.fromX,d.fromZ);playSound('hit');break;
-    case'hitConfirm':showHitMarker();playSound('hit');break;
+    case'hitConfirm':
+      showHitMarker();playSound('hit');
+      // Show blood at target position
+      if(players[d.targetId]){
+        const t=players[d.targetId];
+        showBloodParticles(t.x,t.y,t.z);
+      }
+      break;
     case'kill':
       addKillFeed(d.killerId,d.victimId,d.weapon,d.headshot);
       if(d.victimId===myId){
@@ -973,10 +1009,22 @@ function buildStart(){
   addBox(-50,3,0,2,6,100,0x707070); // west
   addBox(50,3,0,2,6,100,0x707070);  // east
 
-  // Center building
-  addBox(0,2.5,0,8,5,8,0x808080);
+  // Center building with ENTRANCE (open front)
+  // Back wall
+  addBox(0,2.5,4,8,5,0.5,0x808080);
+  // Left wall
+  addBox(-4,2.5,0,0.5,5,8,0x808080);
+  // Right wall
+  addBox(4,2.5,0,0.5,5,8,0x808080);
+  // Front wall with door opening (two parts)
+  addBox(-2.5,2.5,-4,3,5,0.5,0x808080);
+  addBox(2.5,2.5,-4,3,5,0.5,0x808080);
+  // Door frame top
+  addBox(0,4.5,-4,2,1,0.5,0x808080);
   // Center building roof
   addBox(0,5.1,0,9,0.3,9,0x606060);
+  // Floor inside
+  addBox(0,0.05,0,7.5,0.1,7.5,0x555555);
 
   // T side structures
   addBox(-20,1.5,-12,6,3,1,0x8B7355); // wall
@@ -1150,7 +1198,37 @@ function removeWallMesh(wallId){
 }
 
 // ═══════════════════════════════════════════
-// PLAYER MESHES
+// HOSTAGES
+// ═══════════════════════════════════════════
+function syncHostages(){
+  // Remove old hostage meshes
+  for(let hid in hostageMeshes){
+    const h=hostages.find(x=>x.id==hid);
+    if(!h||h.rescued){scene.remove(hostageMeshes[hid]);delete hostageMeshes[hid]}
+  }
+  // Create/update hostage meshes
+  for(const h of hostages){
+    if(h.rescued)continue;
+    if(!hostageMeshes[h.id]){
+      const g=new THREE.Group();
+      const body=new THREE.Mesh(new THREE.BoxGeometry(0.5,0.8,0.35),new THREE.MeshLambertMaterial({color:0xffaa00}));
+      body.position.y=0.9;g.add(body);
+      const head=new THREE.Mesh(new THREE.BoxGeometry(0.3,0.3,0.3),new THREE.MeshLambertMaterial({color:0xdaa06d}));
+      head.position.y=1.5;g.add(head);
+      // Tied hands
+      const hands=new THREE.Mesh(new THREE.BoxGeometry(0.4,0.15,0.15),new THREE.MeshLambertMaterial({color:0xdaa06d}));
+      hands.position.set(0,0.7,0.25);g.add(hands);
+      g.position.set(h.x,0,h.z);
+      scene.add(g);
+      hostageMeshes[h.id]=g;
+    }else{
+      hostageMeshes[h.id].position.set(h.x,0,h.z);
+    }
+  }
+}
+
+// ═══════════════════════════════════════════
+// PLAYER MESHES (with walking animation)
 // ═══════════════════════════════════════════
 function createPlayerMesh(id,p){
   if(id==myId||otherMeshes[id])return;
@@ -1158,23 +1236,70 @@ function createPlayerMesh(id,p){
   const isT=p.team==='T';
   const bc=isT?0xc4782a:0x2a5a8a;
 
-  const body=new THREE.Mesh(new THREE.BoxGeometry(0.6,0.9,0.4),new THREE.MeshLambertMaterial({color:bc}));
-  body.position.y=0.95;body.castShadow=true;g.add(body);
-  const head=new THREE.Mesh(new THREE.BoxGeometry(0.35,0.35,0.35),new THREE.MeshLambertMaterial({color:0xdaa06d}));
-  head.position.y=1.6;head.castShadow=true;g.add(head);
-  // Legs
-  for(let s of[-1,1]){
-    const leg=new THREE.Mesh(new THREE.BoxGeometry(0.2,0.5,0.25),new THREE.MeshLambertMaterial({color:0x333333}));
-    leg.position.set(s*0.15,0.25,0);g.add(leg);
-    const arm=new THREE.Mesh(new THREE.BoxGeometry(0.15,0.6,0.15),new THREE.MeshLambertMaterial({color:bc}));
-    arm.position.set(s*0.38,1.0,-0.1);g.add(arm);
-  }
+  // Body with better proportions
+  const body=new THREE.Mesh(new THREE.BoxGeometry(0.55,0.85,0.35),new THREE.MeshLambertMaterial({color:bc}));
+  body.position.y=0.95;body.castShadow=true;body.name='body';g.add(body);
+  
+  // Head with face detail
+  const head=new THREE.Mesh(new THREE.BoxGeometry(0.32,0.32,0.32),new THREE.MeshLambertMaterial({color:0xdaa06d}));
+  head.position.y=1.55;head.castShadow=true;head.name='head';g.add(head);
+  // Eyes
+  const eyeL=new THREE.Mesh(new THREE.BoxGeometry(0.04,0.04,0.02),new THREE.MeshBasicMaterial({color:0x222222}));
+  eyeL.position.set(-0.08,1.58,-0.16);g.add(eyeL);
+  const eyeR=new THREE.Mesh(new THREE.BoxGeometry(0.04,0.04,0.02),new THREE.MeshBasicMaterial({color:0x222222}));
+  eyeR.position.set(0.08,1.58,-0.16);g.add(eyeR);
+  
+  // Legs (separate for animation)
+  const legL=new THREE.Mesh(new THREE.BoxGeometry(0.18,0.55,0.2),new THREE.MeshLambertMaterial({color:0x333344}));
+  legL.position.set(-0.12,0.28,0);legL.name='legL';g.add(legL);
+  const legR=new THREE.Mesh(new THREE.BoxGeometry(0.18,0.55,0.2),new THREE.MeshLambertMaterial({color:0x333344}));
+  legR.position.set(0.12,0.28,0);legR.name='legR';g.add(legR);
+  
+  // Arms
+  const armL=new THREE.Mesh(new THREE.BoxGeometry(0.12,0.55,0.12),new THREE.MeshLambertMaterial({color:bc}));
+  armL.position.set(-0.35,0.95,-0.05);armL.name='armL';g.add(armL);
+  const armR=new THREE.Mesh(new THREE.BoxGeometry(0.12,0.55,0.12),new THREE.MeshLambertMaterial({color:bc}));
+  armR.position.set(0.35,0.95,-0.05);armR.name='armR';g.add(armR);
+
+  // Weapon holder (visible weapon)
+  const weaponHolder=new THREE.Group();
+  weaponHolder.name='weaponHolder';
+  weaponHolder.position.set(0.25,0.85,-0.25);
+  g.add(weaponHolder);
+  // Default weapon (rifle)
+  const wep=new THREE.Mesh(new THREE.BoxGeometry(0.06,0.06,0.4),new THREE.MeshLambertMaterial({color:0x444444}));
+  weaponHolder.add(wep);
 
   g.position.set(p.x||0,0,p.z||0);
   scene.add(g);
-  otherMeshes[id]={mesh:g,tgt:new THREE.Vector3(p.x||0,0,p.z||0)};
+  otherMeshes[id]={mesh:g,tgt:new THREE.Vector3(p.x||0,0,p.z||0),moving:false,walkPhase:0};
 }
+
 function removePlayerMesh(id){if(otherMeshes[id]){scene.remove(otherMeshes[id].mesh);delete otherMeshes[id]}}
+
+// Animate player walking
+function animatePlayerWalk(pm,dt){
+  if(!pm||!pm.mesh)return;
+  const legL=pm.mesh.children.find(c=>c.name==='legL');
+  const legR=pm.mesh.children.find(c=>c.name==='legR');
+  const armL=pm.mesh.children.find(c=>c.name==='armL');
+  const armR=pm.mesh.children.find(c=>c.name==='armR');
+  
+  if(pm.moving){
+    pm.walkPhase=(pm.walkPhase||0)+dt*12;
+    const swing=Math.sin(pm.walkPhase)*0.4;
+    if(legL)legL.rotation.x=swing;
+    if(legR)legR.rotation.x=-swing;
+    if(armL)armL.rotation.x=-swing*0.6;
+    if(armR)armR.rotation.x=swing*0.6;
+  }else{
+    // Reset to standing position
+    if(legL)legL.rotation.x*=0.85;
+    if(legR)legR.rotation.x*=0.85;
+    if(armL)armL.rotation.x*=0.85;
+    if(armR)armR.rotation.x*=0.85;
+  }
+}
 
 // ═══════════════════════════════════════════
 // GUN MODELS
@@ -1455,8 +1580,8 @@ function tryShoot(){
   if(Date.now()-lastShot<w.fireRate)return;
   if(!w.melee&&w.clip<=0){reload();return}
   lastShot=Date.now();
-  if(!w.melee){w.clip--;updateWeaponUI();showMuzzleFlash()}
-  playSound('shoot');
+  if(!w.melee){w.clip--;updateWeaponUI();showMuzzleFlash();playSound('shoot')}
+  else{playSound('knife')}
   // Recoil
   if(!w.melee){pitch+=Math.random()*0.012+0.004;yaw+=(Math.random()-0.5)*0.006}
   camera.rotation.order='YXZ';camera.rotation.y=-yaw;camera.rotation.x=-pitch;
@@ -1605,11 +1730,13 @@ function gameLoop(time){
   // Auto fire
   if(shooting&&WEAPONS[curWeapon].auto)tryShoot();
 
-  // Interpolate
+  // Interpolate and animate
   for(let pid in otherMeshes){
     const pm=otherMeshes[pid];
     if(pm.tgt)pm.mesh.position.lerp(pm.tgt,0.15);
     pm.mesh.visible=players[pid]&&players[pid].alive;
+    // Walking animation
+    animatePlayerWalk(pm,dt);
   }
 
   // Send pos
@@ -1647,14 +1774,12 @@ document.addEventListener('mousedown',e=>{
 document.addEventListener('mouseup',e=>{if(e.button===0)shooting=false});
 
 document.addEventListener('keydown',e=>{
-  // CHEAT: Alt+W = +$5000
+  // CHEAT: Alt+W = +$5000 (SERVER-SIDE)
   if(e.altKey&&e.code==='KeyW'){
     e.preventDefault();
-    money+=5000;updateMoney();
-    if(myPlayer)myPlayer.money=money;
-    const cm=document.getElementById('cheatMsg');cm.classList.add('show');
-    setTimeout(()=>cm.classList.remove('show'),2000);
-    addChat('CHEAT','+$5000!');
+    if(ws&&ws.readyState===WebSocket.OPEN&&inGame){
+      ws.send(JSON.stringify({type:'cheat',code:'money5000'}));
+    }
     return;
   }
 
