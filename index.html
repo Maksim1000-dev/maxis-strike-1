@@ -3,7 +3,7 @@
 <head>
 <meta charset="UTF-8">
 <meta name="viewport" content="width=device-width, initial-scale=1.0, user-scalable=no">
-<title>MAXIS STRIKE v5.0</title>
+<title>MAXIS STRIKE v6.0</title>
 <style>
 *{margin:0;padding:0;box-sizing:border-box;touch-action:none}
 body{background:#000;overflow:hidden;font-family:'Segoe UI',sans-serif;color:#fff}
@@ -243,7 +243,7 @@ canvas{display:block}
 <div id="menu">
   <div class="logo-sub">★ TACTICAL SHOOTER ★</div>
   <div class="logo-main">MAXIS STRIKE</div>
-  <div class="logo-sub" style="margin-top:10px">v5.0 — RPG + PHYSICS + DESTRUCTION</div>
+  <div class="logo-sub" style="margin-top:10px">v6.0 — PHYSICS + HOSTAGES + ANIMATIONS</div>
   <div class="menu-buttons" style="margin-top:40px">
     <button class="menu-btn" onclick="showServerBrowser()">► PLAY</button>
     <button class="menu-btn" onclick="showSettings()">⚙ SETTINGS</button>
@@ -459,8 +459,140 @@ canvas{display:block}
 <script src="https://cdnjs.cloudflare.com/ajax/libs/three.js/r128/three.min.js"></script>
 <script>
 // ═══════════════════════════════════════════════════════
-// MAXIS STRIKE v5.0 CLIENT
+// MAXIS STRIKE v6.0 CLIENT
+// Physics, Hostages, Walk Animation, Better Textures, Server Cheat
 // ═══════════════════════════════════════════════════════
+
+// === PROCEDURAL TEXTURES ===
+function makeCanvasTex(w,h,drawFn){
+  const c=document.createElement('canvas');c.width=w;c.height=h;
+  const ctx=c.getContext('2d');drawFn(ctx,w,h);
+  const tex=new THREE.CanvasTexture(c);tex.wrapS=tex.wrapT=THREE.RepeatWrapping;
+  return tex;
+}
+
+const TEX_CACHE={};
+function getTex(name){
+  if(TEX_CACHE[name])return TEX_CACHE[name];
+  let tex;
+  if(name==='brick'){
+    tex=makeCanvasTex(128,128,(ctx,w,h)=>{
+      ctx.fillStyle='#8B6B4A';ctx.fillRect(0,0,w,h);
+      const bw=30,bh=12,gap=2;
+      for(let row=0;row<12;row++){
+        const off=row%2?bw/2:0;
+        for(let col=-1;col<6;col++){
+          const x=col*bw+off+gap/2,y=row*bh+gap/2;
+          const r=Math.random()*20-10;
+          ctx.fillStyle=`rgb(${139+r},${90+r},${60+r})`;
+          ctx.fillRect(x,y,bw-gap,bh-gap);
+          ctx.strokeStyle='rgba(0,0,0,0.15)';ctx.strokeRect(x,y,bw-gap,bh-gap);
+        }
+      }
+    });tex.repeat.set(3,3);
+  }else if(name==='concrete'){
+    tex=makeCanvasTex(128,128,(ctx,w,h)=>{
+      ctx.fillStyle='#808080';ctx.fillRect(0,0,w,h);
+      for(let i=0;i<800;i++){
+        const x=Math.random()*w,y=Math.random()*h;
+        ctx.fillStyle=`rgba(${Math.random()>0.5?100:60},${Math.random()>0.5?100:60},${Math.random()>0.5?100:60},0.3)`;
+        ctx.fillRect(x,y,1+Math.random()*2,1+Math.random()*2);
+      }
+      // Cracks
+      ctx.strokeStyle='rgba(0,0,0,0.2)';ctx.lineWidth=1;
+      for(let i=0;i<3;i++){
+        ctx.beginPath();let cx=Math.random()*w,cy=Math.random()*h;ctx.moveTo(cx,cy);
+        for(let j=0;j<5;j++){cx+=(Math.random()-0.5)*30;cy+=(Math.random()-0.5)*30;ctx.lineTo(cx,cy)}
+        ctx.stroke();
+      }
+    });tex.repeat.set(2,2);
+  }else if(name==='wood'){
+    tex=makeCanvasTex(64,64,(ctx,w,h)=>{
+      ctx.fillStyle='#8B6914';ctx.fillRect(0,0,w,h);
+      for(let i=0;i<w;i+=3){
+        ctx.fillStyle=`rgba(${100+Math.random()*40},${60+Math.random()*30},${10+Math.random()*20},0.4)`;
+        ctx.fillRect(i,0,2,h);
+      }
+      // Planks
+      ctx.strokeStyle='rgba(0,0,0,0.3)';ctx.lineWidth=2;
+      ctx.beginPath();ctx.moveTo(0,h/3);ctx.lineTo(w,h/3);ctx.stroke();
+      ctx.beginPath();ctx.moveTo(0,2*h/3);ctx.lineTo(w,2*h/3);ctx.stroke();
+      // Nail dots
+      for(let y=0;y<3;y++){
+        ctx.fillStyle='#555';
+        ctx.beginPath();ctx.arc(10,h/6+y*h/3,2,0,Math.PI*2);ctx.fill();
+        ctx.beginPath();ctx.arc(w-10,h/6+y*h/3,2,0,Math.PI*2);ctx.fill();
+      }
+    });
+  }else if(name==='sand'){
+    tex=makeCanvasTex(128,128,(ctx,w,h)=>{
+      ctx.fillStyle='#C4A35A';ctx.fillRect(0,0,w,h);
+      for(let i=0;i<2000;i++){
+        const x=Math.random()*w,y=Math.random()*h;
+        const v=Math.random()*30;
+        ctx.fillStyle=`rgba(${190+v},${160+v},${80+v},0.5)`;
+        ctx.fillRect(x,y,1,1);
+      }
+      // Small pebbles
+      for(let i=0;i<15;i++){
+        ctx.fillStyle=`rgba(${100+Math.random()*50},${80+Math.random()*40},${40+Math.random()*30},0.6)`;
+        ctx.beginPath();ctx.arc(Math.random()*w,Math.random()*h,1+Math.random()*2,0,Math.PI*2);ctx.fill();
+      }
+    });tex.repeat.set(8,8);
+  }else if(name==='metal'){
+    tex=makeCanvasTex(64,64,(ctx,w,h)=>{
+      const grd=ctx.createLinearGradient(0,0,w,h);
+      grd.addColorStop(0,'#666');grd.addColorStop(0.5,'#888');grd.addColorStop(1,'#666');
+      ctx.fillStyle=grd;ctx.fillRect(0,0,w,h);
+      for(let i=0;i<300;i++){
+        ctx.fillStyle=`rgba(${Math.random()*255},${Math.random()*255},${Math.random()*255},0.02)`;
+        ctx.fillRect(Math.random()*w,Math.random()*h,1,1);
+      }
+      // Rivets
+      for(let x=8;x<w;x+=16)for(let y=8;y<h;y+=16){
+        ctx.fillStyle='#555';ctx.beginPath();ctx.arc(x,y,1.5,0,Math.PI*2);ctx.fill();
+      }
+    });
+  }else if(name==='darkfloor'){
+    tex=makeCanvasTex(128,128,(ctx,w,h)=>{
+      ctx.fillStyle='#404050';ctx.fillRect(0,0,w,h);
+      // Tile pattern
+      for(let x=0;x<w;x+=32)for(let y=0;y<h;y+=32){
+        const v=Math.random()*10-5;
+        ctx.fillStyle=`rgb(${64+v},${64+v},${80+v})`;
+        ctx.fillRect(x+1,y+1,30,30);
+      }
+      for(let i=0;i<500;i++){
+        ctx.fillStyle=`rgba(255,255,255,${Math.random()*0.05})`;
+        ctx.fillRect(Math.random()*w,Math.random()*h,1,1);
+      }
+    });tex.repeat.set(6,6);
+  }else if(name==='grass'){
+    tex=makeCanvasTex(128,128,(ctx,w,h)=>{
+      ctx.fillStyle='#556B2F';ctx.fillRect(0,0,w,h);
+      for(let i=0;i<1500;i++){
+        const x=Math.random()*w,y=Math.random()*h;
+        const g=50+Math.random()*40;
+        ctx.fillStyle=`rgba(${40+Math.random()*30},${g+60},${20+Math.random()*20},0.5)`;
+        ctx.fillRect(x,y,1,2+Math.random()*2);
+      }
+    });tex.repeat.set(10,10);
+  }else if(name==='barrel'){
+    tex=makeCanvasTex(64,32,(ctx,w,h)=>{
+      ctx.fillStyle='#8B0000';ctx.fillRect(0,0,w,h);
+      // Metal bands
+      ctx.fillStyle='#555';
+      ctx.fillRect(0,0,w,3);ctx.fillRect(0,h-3,w,3);ctx.fillRect(0,h/2-1,w,2);
+      // Wear
+      for(let i=0;i<100;i++){
+        ctx.fillStyle=`rgba(0,0,0,${Math.random()*0.15})`;
+        ctx.fillRect(Math.random()*w,Math.random()*h,2,2);
+      }
+    });
+  }
+  TEX_CACHE[name]=tex;
+  return tex;
+}
 
 // === AUDIO ===
 const AudioCtx=window.AudioContext||window.webkitAudioContext;let audioCtx;
@@ -486,6 +618,11 @@ function playSound(type){
     osc.frequency.exponentialRampToValueAtTime(900,audioCtx.currentTime+0.15);
     g.gain.exponentialRampToValueAtTime(0.001,audioCtx.currentTime+0.2);
     osc.connect(g);osc.start();osc.stop(audioCtx.currentTime+0.2);
+  }else if(type==='rescue'){
+    const osc=audioCtx.createOscillator();osc.type='sine';osc.frequency.value=400;
+    osc.frequency.exponentialRampToValueAtTime(800,audioCtx.currentTime+0.3);
+    g.gain.value=0.2*vol;g.gain.exponentialRampToValueAtTime(0.001,audioCtx.currentTime+0.4);
+    osc.connect(g);osc.start();osc.stop(audioCtx.currentTime+0.4);
   }
 }
 
@@ -516,6 +653,7 @@ let weaponPrices={knife:0,usp:500,deagle:1500,ak47:2000,m4a1:2500,awp:4000,rpg:5
 let otherMeshes={},gunMesh=null,mapBoxes=[];
 let mapSize=50,buyZoneT={x:-25,z:0,r:8},buyZoneCT={x:25,z:0,r:8};
 let destructibleWalls=[],physicsObjects=[];
+let hostages=[],hostageMeshes={},gameMode='deathmatch';
 
 // ═══════════════════════════════════════════
 // WEBSOCKET
@@ -608,10 +746,12 @@ function handleMsg(d){
     case'joinedRoom':
       currentRoom=d.roomId;currentMap=d.map;myPlayer=d.player;players=d.players;
       money=myPlayer.money;ownedWeapons=myPlayer.weapons||['knife'];
+      gameMode=d.mode||'deathmatch';
       if(d.destructibleWalls)destructibleWalls=d.destructibleWalls;
       if(d.physicsObjects)physicsObjects=d.physicsObjects;
       if(d.mapSize)mapSize=d.mapSize;
       if(d.weaponPrices)weaponPrices=d.weaponPrices;
+      if(d.hostages)hostages=d.hostages;
       hideServerBrowser();startGame();break;
     case'playerJoin':players[d.player.id]=d.player;createPlayerMesh(d.player.id,d.player);addChat('SERVER',d.player.name+' joined');break;
     case'playerLeave':delete players[d.id];removePlayerMesh(d.id);addChat('SERVER','Player left');break;
@@ -619,6 +759,7 @@ function handleMsg(d){
       if(d.id!=myId&&otherMeshes[d.id]){
         otherMeshes[d.id].tgt=new THREE.Vector3(d.x,d.y-1.7,d.z);
         otherMeshes[d.id].mesh.rotation.y=-d.ry;
+        otherMeshes[d.id].moving=d.moving||false;
       }
       if(players[d.id]){players[d.id].x=d.x;players[d.id].y=d.y;players[d.id].z=d.z}
       break;
@@ -653,9 +794,21 @@ function handleMsg(d){
     case'state':
       players=d.players;
       if(d.scores){document.getElementById('scoreT').textContent=d.scores.T||0;document.getElementById('scoreCT').textContent=d.scores.CT||0}
+      if(d.hostages){hostages=d.hostages;syncHostages()}
       for(let p in players){if(p!=myId&&!otherMeshes[p])createPlayerMesh(p,players[p])}
       for(let p in otherMeshes){if(!players[p])removePlayerMesh(p)}
       break;
+    case'hostageFollow':
+      {const h=hostages.find(x=>x.id===d.hostageId);if(h)h.followingPlayer=d.playerId;playSound('rescue')}break;
+    case'hostageRescued':
+      {const h=hostages.find(x=>x.id===d.hostageId);if(h){h.rescued=true;h.followingPlayer=null}
+      if(d.scores){document.getElementById('scoreT').textContent=d.scores.T||0;document.getElementById('scoreCT').textContent=d.scores.CT||0}
+      addChat('SERVER','Hostage rescued!');playSound('rescue');syncHostages()}break;
+    case'hostageUpdate':if(d.hostages){hostages=d.hostages;syncHostages()}break;
+    case'cheatApplied':
+      if(d.code==='money5000'){money=d.money;updateMoney();
+      const cm=document.getElementById('cheatMsg');cm.classList.add('show');
+      setTimeout(()=>cm.classList.remove('show'),2000);addChat('CHEAT','+$5000!')}break;
     case'chat':addChat(d.name,d.msg);break;
     case'weaponBought':
       money=d.money;ownedWeapons=d.weapons;curWeapon=d.weapon;
@@ -745,9 +898,9 @@ function rebuildMap(){
   scene.background=new THREE.Color(skyC);
   scene.fog=new THREE.Fog(skyC,80,200);
 
-  // Ground
-  const gndC=currentMap==='MS_DUST'?0xC4A35A:currentMap==='MS_ARENA_BETA'?0x404050:0x556B2F;
-  const gnd=new THREE.Mesh(new THREE.PlaneGeometry(300,300),new THREE.MeshLambertMaterial({color:gndC}));
+  // Ground with textures
+  const gndTex=currentMap==='MS_DUST'?getTex('sand'):currentMap==='MS_ARENA_BETA'?getTex('darkfloor'):getTex('grass');
+  const gnd=new THREE.Mesh(new THREE.PlaneGeometry(300,300),new THREE.MeshLambertMaterial({map:gndTex}));
   gnd.rotation.x=-Math.PI/2;gnd.receiveShadow=true;scene.add(gnd);
 
   // Ground detail lines
@@ -767,9 +920,15 @@ function rebuildMap(){
   for(let pid in players){if(pid!=myId)createPlayerMesh(pid,players[pid])}
 }
 
-function addBox(x,y,z,w,h,d,color){
+function addBox(x,y,z,w,h,d,color,texName){
   const geo=new THREE.BoxGeometry(w,h,d);
-  const mat=new THREE.MeshLambertMaterial({color});
+  let mat;
+  if(texName){
+    const tex=getTex(texName);
+    mat=new THREE.MeshLambertMaterial({map:tex});
+  }else{
+    mat=new THREE.MeshLambertMaterial({color});
+  }
   const m=new THREE.Mesh(geo,mat);
   m.position.set(x,y,z);m.castShadow=true;m.receiveShadow=true;
   scene.add(m);
@@ -777,9 +936,14 @@ function addBox(x,y,z,w,h,d,color){
   return m;
 }
 
-function addCylinder(x,y,z,r,h,color){
+function addCylinder(x,y,z,r,h,color,texName){
   const geo=new THREE.CylinderGeometry(r,r,h,16);
-  const mat=new THREE.MeshLambertMaterial({color});
+  let mat;
+  if(texName){
+    mat=new THREE.MeshLambertMaterial({map:getTex(texName)});
+  }else{
+    mat=new THREE.MeshLambertMaterial({color});
+  }
   const m=new THREE.Mesh(geo,mat);
   m.position.set(x,y,z);m.castShadow=true;m.receiveShadow=true;
   scene.add(m);
