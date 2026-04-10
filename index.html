@@ -1,10 +1,10 @@
 <!DOCTYPE html>
-<<htmlhtml lang="en">
-<<headhead>
-    <<metameta charset="UTF-8">
-    <<metameta name="viewport" content="width=device-width, initial-scale=1.0">
-    <<titletitle>MAXIS STRIKE</title>
-    <<stylestyle>
+<html lang="en">
+<head>
+    <meta charset="UTF-8">
+    <meta name="viewport" content="width=device-width, initial-scale=1.0">
+    <title>MAXIS STRIKE</title>
+    <style>
         body { margin: 0; overflow: hidden; background: #111; color: white; font-family: 'Segoe UI', Tahoma, Geneva, Verdana, sans-serif; }
         canvas { display: block; }
         #ui-overlay { position: absolute; top: 0; left: 0; width: 100%; height: 100%; pointer-events: none; display: flex; flex-direction: column; justify-content: space-between; padding: 20px; box-sizing: border-box; z-index: 10; }
@@ -29,42 +29,42 @@
     </style>
 </head>
 <body>
-    <<divdiv id="menu">
+    <div id="menu">
         <h1>MAXIS STRIKE</h1>
-        <<pp>Choose your side to enter the battle</p>
-        <<divdiv class="menu-btns">
-            <<buttonbutton class="btn-t" onclick="joinGame('T')">JOIN T</button>
-            <<buttonbutton class="btn-ct" onclick="joinGame('CT')">JOIN CT</button>
+        <p>Choose your side to enter the battle</p>
+        <div class="menu-btns">
+            <button class="btn-t" onclick="joinGame('T')">JOIN T</button>
+            <button class="btn-ct" onclick="joinGame('CT')">JOIN CT</button>
         </div>
     </div>
 
-    <<divdiv id="ui-overlay">
-        <<divdiv class="top-bar">
-            <<divdiv class="team-score team-t">T: <<spanspan id="score-t">0</span></div>
-            <<divdiv id="timer">01:30</div>
-            <<divdiv class="team-score team-ct">CT: <<spanspan id="score-ct">0</span></div>
+    <div id="ui-overlay">
+        <div class="top-bar">
+            <div class="team-score team-t">T: <span id="score-t">0</span></div>
+            <div id="timer">01:30</div>
+            <div class="team-score team-ct">CT: <span id="score-ct">0</span></div>
         </div>
-        <<divdiv class="bottom-bar">
-            <<divdiv class="health-container">
+        <div class="bottom-bar">
+            <div class="health-container">
                 <span>HEALTH</span>
-                <<divdiv class="health-bar-container">
-                    <<divdiv id="health-fill"></div>
+                <div class="health-bar-container">
+                    <div id="health-fill"></div>
                 </div>
             </div>
-            <<divdiv class="ammo-counter"><<spanspan id="ammo">30</span> / <<spanspan id="reserve">90</span></div>
+            <div class="ammo-counter"><span id="ammo">30</span> / <span id="reserve">90</span></div>
         </div>
     </div>
 
-    <<canvascanvas id="gameCanvas"></canvas>
+    <canvas id="gameCanvas"></canvas>
 
-    <<scriptscript src="/socket.io/socket.io.js"></script>
-    <<scriptscript src="impact-engine/core.js"></script>
-    <<scriptscript src="impact-engine/physics.js"></script>
-    <<scriptscript src="impact-engine/entities.js"></script>
-    <<scriptscript src="impact-engine/renderer.js"></script>
-    <<scriptscript src="impact-engine/engine.js"></script>
+    <script src="/socket.io/socket.io.js"></script>
+    <script src="impact-engine/core.js"></script>
+    <script src="impact-engine/physics.js"></script>
+    <script src="impact-engine/entities.js"></script>
+    <script src="impact-engine/renderer.js"></script>
+    <script src="impact-engine/engine.js"></script>
 
-    <<scriptscript>
+    <script>
         const socket = io();
         let myTeam = null;
         let gameStarted = false;
